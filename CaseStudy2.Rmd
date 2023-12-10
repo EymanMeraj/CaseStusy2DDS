@@ -1,0 +1,302 @@
+---
+title: "Case Study 2"
+author: "Meraj"
+date: "2023-11-27"
+output: html_document
+---
+
+Link to the presentation: https://github.com/EymanMeraj/CaseStusy2DDS/blob/main/Presentation.mp4
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load libraries
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(knitr))
+suppressPackageStartupMessages(library(e1071))
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(class))
+suppressPackageStartupMessages(library(readxl))
+```
+
+
+1. Data Preprocessing & Exploration
+
+```{r}
+# Load the dataset
+data <- read.csv("CaseStudy2-data.csv")
+
+# Explore the structure of the dataset
+str(data)
+
+# Check for missing values
+sum(is.na(data)) # no missing
+```
+
+2. Boxplots of Numeric Variables Grouped by Attrition
+
+```{r}
+# Select numeric variables except ID
+numeric_vars <- data %>% select_if(is.numeric) %>% select(-ID)
+
+# Melt data for boxplot plotting
+melted_data <- numeric_vars %>%
+  mutate(Attrition = data$Attrition) %>%
+  gather(variable, value, -Attrition)
+
+# Create boxplots
+ggplot(melted_data, aes(x = Attrition, y = value, color = Attrition)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free_y") +
+  labs(x = "Attrition", y = "Value", title = "Boxplots of Numeric Variables by Attrition") +
+  theme(strip.text = element_text(size = 3.5, face = "bold"))
+
+# Calculate mean values by Attrition
+mean_values <- numeric_vars %>%
+  mutate(Attrition = data$Attrition) %>%
+  group_by(Attrition) %>%
+  summarise(across(everything(), \(x) mean(x, na.rm = TRUE)))
+
+mean_values <- data.frame(t(mean_values))
+mean_values <- mean_values[-1, ]
+colnames(mean_values) <- c("Attrition=No", "Attrition=Yes")
+mean_values <- mean_values %>% mutate_if(is.character, as.numeric)
+# Calculate the relative difference in the mean of each numeric variables grouped by attrition(use attrition = No as the reference)
+
+mean_values$RelativeDiff <- ((mean_values$`Attrition=Yes` - mean_values$`Attrition=No`) / mean_values$`Attrition=No`) * 100
+mean_values <- round(mean_values, 2)
+
+# Select the top 5 variables that has the largest relative difference
+sorted_mean_values <- mean_values %>% arrange(desc(abs(RelativeDiff)))
+
+# Display the result
+kable(sorted_mean_values[which(abs(sorted_mean_values$RelativeDiff)>=10),], caption = "The top 11 numeric variables displaying relative differences of at least 10%")
+
+```
+
+From the boxplots and the summary table of means, noticeable disparities emerge in the distributions and means of "StockOptionLevel," "YearsInCurrentRole," "YearsWithCurrManager," "TotalWorkingYears," and "MonthlyIncome" when grouped by attrition status. Indicating those 5 variables may be the key factors that cause "Attrition". 
+
+3. Chi-Square Test of Independence for Categorical Variables
+
+```{r warning=FALSE}
+# Select categorical variables, remove Over18 since everyone in the data set is over 18.
+char_columns <- colnames(data %>% select_if(is.character))[-c(1,8)]
+
+# Chi-square test for independence for categorical variables
+p_values_chi <- c()
+for (i in 1:length(char_columns)){
+  var = char_columns[i]
+  contingency_table <- table(Variable = data[, var], Attrition = data$Attrition)
+  PropOfAttrition <- as.vector(round(contingency_table[, 2]/(contingency_table[, 1]+contingency_table[,2]), 3))
+  show_tab <- cbind(contingency_table, PropOfAttrition)
+  cat("For ", var, "\n")
+  print(show_tab)
+  cat("**************************", "\n")
+  chisq_test <- chisq.test(contingency_table)
+  p_values_chi[i] <- round(chisq_test$p.value, 4)
+}
+chi_test_df <- t(data.frame(Variable = char_columns, P_value = p_values_chi))
+rownames(chi_test_df) <- NULL
+# Print the p-values table
+kable(chi_test_df, caption = "P-values of Chi-Square Test of Independence with Attrition")
+```
+
+
+Based on the p-values and the contingency tables, we see that there are higher proportions of attrition among people with overtime and those who work as sales representatives. Thus, the variable "OverTime" and "JobRole" are highly related with attrition.
+
+4. The Top 3 Factors
+
+"StockOptionLevel," "YearsInCurrentRole," and "OverTime"
+
+
+5. Predictive model (Naive Bayes)
+
+Build the model using the top 11 numerical variables which have a relative difference at least 10% in part 2, and 5 categorical variables that has a p-value less than 0.01 in part 3, 
+
+```{r}
+# Select the variables that were identified in part 2 and 3
+model_data <- data %>% select(Attrition, StockOptionLevel, YearsInCurrentRole, 
+                              YearsWithCurrManager, TotalWorkingYears,
+                              MonthlyIncome, YearsAtCompany, JobLevel,
+                              DistanceFromHome, NumCompaniesWorked,
+                              JobInvolvement, JobSatisfaction, Department,
+                              JobRole, MaritalStatus, OverTime)
+
+# Perform Naive Bayes 
+# Define the predictors (exclude the target variable)
+predictors <- names(model_data)[!names(model_data) %in% "Attrition"]
+
+# Train the Naive Bayes model
+nb_model <- naiveBayes(model_data[, predictors], model_data$Attrition)
+
+# Predictions on the training set
+predictions_train_nb <- predict(nb_model, newdata = model_data, type = "class")
+
+# Create the confusion matrix
+actual = as.factor(model_data$Attrition)
+conf_matrix_train_nb <- confusionMatrix(predictions_train_nb, actual)
+
+# Extract evaluation metrics
+accuracy_train_nb <- conf_matrix_train_nb$overall["Accuracy"]
+sensitivity_train_nb <- conf_matrix_train_nb$byClass["Sensitivity"]
+specificity_train_nb <- conf_matrix_train_nb$byClass["Specificity"]
+
+# Display the results
+evaluation_train <- data.frame(t(c(accuracy_train_nb, sensitivity_train_nb, specificity_train_nb)))
+kable(evaluation_train, caption = "The naive Bayes model performance on the training data")
+
+test_data <- read.csv("CaseStudy2CompSet No Attrition.csv")
+
+test_data <- test_data %>% select(ID, StockOptionLevel, YearsInCurrentRole, 
+                                  YearsWithCurrManager, TotalWorkingYears,
+                                  MonthlyIncome, YearsAtCompany, JobLevel,
+                                  DistanceFromHome, NumCompaniesWorked,
+                                  JobInvolvement, JobSatisfaction, Department,
+                                  JobRole, MaritalStatus, OverTime)
+
+# Predictions on the test set
+predictions_test_nb <- predict(nb_model, newdata = test_data, type = "class")
+head(predictions_test_nb)
+
+# Save the results to a csv file
+pred_test_data <- data.frame(ID = test_data$ID, Attrition = predictions_test_nb)
+write.csv(pred_test_data, file = "NB_Case2PredictionsMeraj Attrition.csv", row.names = FALSE)
+```
+
+
+6. Predictive model (KNN)
+
+Build the model using the top 11 numerical variables which have a relative difference at least 10% in part 2. 
+
+```{r}
+# Select the variables that were identified in part 2
+model_data <- data %>% select(Attrition, StockOptionLevel, YearsInCurrentRole, 
+                              YearsWithCurrManager, TotalWorkingYears,
+                              MonthlyIncome, YearsAtCompany, JobLevel,
+                              DistanceFromHome, NumCompaniesWorked,
+                              JobInvolvement, JobSatisfaction)
+
+# Standardize the predictors since they have different scales
+model_data[, 2:ncol(model_data)] <- as.data.frame(scale(model_data[, 2:ncol(model_data)]))
+
+# Perform KNN and predict the labels on the test data
+# Define the predictors and label
+predictors <- names(model_data)[!names(model_data) %in% "Attrition"]
+label <- "Attrition"
+
+# Fit the model and predict the labels in the training data
+knn.pred.train <- knn(model_data[predictors], model_data[predictors], 
+                      model_data[, label], k = 2)
+
+# Create confusion matrix
+actual = as.factor(model_data$Attrition)
+conf_matrix_train_knn <- confusionMatrix(knn.pred.train, actual)
+
+# Extract values
+accuracy_train_knn <- conf_matrix_train_knn$overall["Accuracy"]
+sensitivity_train_knn <- conf_matrix_train_knn$byClass["Sensitivity"]
+specificity_train_knn <- conf_matrix_train_knn$byClass["Specificity"]
+
+# Display the results
+evaluation_train <- data.frame(t(c(accuracy_train_knn, sensitivity_train_knn, specificity_train_knn)))
+kable(evaluation_train, caption = "The KNN model performance on the training data")
+
+# Read the test data 
+test_data <- read.csv("CaseStudy2CompSet No Attrition.csv")
+
+test_data <- test_data %>% select(ID, StockOptionLevel, YearsInCurrentRole, 
+                                  YearsWithCurrManager, TotalWorkingYears,
+                                  MonthlyIncome, YearsAtCompany, JobLevel,
+                                  DistanceFromHome, NumCompaniesWorked,
+                                  JobInvolvement, JobSatisfaction)
+
+# Standardize the predictors since they have different scales
+test_data[, 2:ncol(test_data)] <- as.data.frame(scale(test_data[, 2:ncol(test_data)]))
+
+# Predictions on the test set
+knn.pred.test <- knn(model_data[predictors], test_data[predictors], 
+                     model_data[, label], k = 2)
+
+# Save the results to a csv file
+pred_test_data <- data.frame(ID = test_data$ID, Attrition = knn.pred.test)
+write.csv(pred_test_data, file = "KNN_Case2PredictionsMeraj Attrition.csv", row.names = FALSE)
+```
+
+7. Which job has the highest job satisfaction on average
+
+```{r}
+# Load the dataset
+data <- read.csv("CaseStudy2-data.csv")
+
+grouped_data <- data %>% group_by(JobRole) %>%
+  summarise(meanSatisfaction = mean(JobSatisfaction)) %>%
+  arrange(desc(meanSatisfaction))
+
+grouped_data
+```
+
+Healthcare representatives have the highest job satisfaction on average.
+
+8. Which job has the highest monthly income on average
+
+```{r}
+# Load the dataset
+data <- read.csv("CaseStudy2-data.csv")
+
+grouped_data <- data %>% group_by(JobRole) %>%
+  summarise(meanIncome = mean(MonthlyIncome)) %>%
+  arrange(desc(meanIncome))
+
+grouped_data
+```
+
+Managers have the highest monthly income on average.
+
+9. Build a linear regression model for monthly income
+
+The variables "Over18", "EmployeeCount" and "StandardHours" won't be included as predictors in the model since those variables only has 1 value. Use the remaining variables to build a multiple regression model to predict the income.
+
+```{r}
+# Load the dataset
+data <- read.csv("CaseStudy2-data.csv")
+data <- data %>% select(-c(ID, Over18, EmployeeCount, StandardHours))
+
+# Convert the categorical variables to factors
+data <- data %>% mutate_if(is.character, as.factor)
+
+# Build a model with all the predictors 
+model <- lm(MonthlyIncome ~ ., data = data)  # Initial model with all predictors
+
+# Check which variables has a p-value less than 0.05
+pvalue_table <- summary(model)$coefficients[,4]
+pvalue_table[pvalue_table < 0.05]
+
+# Select those variables that has a p-value less than 0.05, then build a model using those variables
+model_new <- lm(MonthlyIncome ~ BusinessTravel + JobLevel + JobRole + 
+                  PerformanceRating + TotalWorkingYears + YearsSinceLastPromotion, 
+                data = data)  
+
+# Make predictions on the training data
+predicted <- predict(model_new, data)
+
+# Calculate RMSE
+rmse <- sqrt(mean((data$MonthlyIncome - predicted)^2))
+
+# Display RMSE
+print(paste("Root Mean Squared Error (RMSE) on the trainging data: ", "$", round(rmse, 2), sep = ""))
+
+# Read the test data
+test_data <- read_excel("CaseStudy2CompSet No Salary.xlsx")
+
+# Make predictions on the training data
+predicted_test <- predict(model_new, test_data)
+
+# Save the results to a csv file
+pred_test_data <- data.frame(ID = test_data$ID, MonthlyIncome = predicted_test)
+write.csv(pred_test_data, file = "Case2PredictionsMeraj Salary.csv", row.names = FALSE)
+```
+
